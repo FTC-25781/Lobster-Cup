@@ -29,7 +29,7 @@ import java.util.List;
 
 import pedroPathing.auto.constants.FConstants;
 import pedroPathing.auto.constants.LConstants;
-import pedroPathing.constants.*;
+import pedroPathing.auto.constants.*;
 
 /**
  * This is the LocalizationTest OpMode. This is basically just a simple mecanum drive attached to a
