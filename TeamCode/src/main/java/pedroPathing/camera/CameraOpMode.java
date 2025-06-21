@@ -14,20 +14,35 @@ import org.openftc.easyopencv.*;
 import java.util.ArrayList;
 import java.util.List;
 
+// Imports for Follower and Pose
+import com.pedropathing.follower.Follower;
+import com.pedropathing.localization.Pose;
+import com.pedropathing.util.Constants;
+import pedroPathing.auto.constants.FConstants;
+import pedroPathing.auto.constants.LConstants;
+
 @Config
-@TeleOp(name = "Multi-Blue Object Detector", group = "Concept")
+@TeleOp(name = "Camera Drive Forward + Strafe", group = "Concept")
 public class CameraOpMode extends LinearOpMode {
 
     private OpenCvCamera camera;
     private BlueObjectDetectionPipeline pipeline;
 
-    // === Dashboard-adjustable variable ===
     public static double cameraAngleDeg = 31.0;
+
+    private Follower follower;
+    private final Pose startPose = new Pose(0, 0, 0);
 
     @Override
     public void runOpMode() {
 
-        // Set up camera
+        // Follower setup
+        Constants.setConstants(FConstants.class, LConstants.class);
+        follower = new Follower(hardwareMap, FConstants.class, LConstants.class);
+        follower.setStartingPose(startPose);
+        follower.startTeleopDrive();
+
+        // Camera setup
         int camMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
                 "cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
 
@@ -61,64 +76,90 @@ public class CameraOpMode extends LinearOpMode {
             sleep(50);
         }
 
-        // Output detection results
-        List<Rect> blueObjects = pipeline.getDetectedRects();
-        List<Scalar> avgColors = pipeline.getAvgColors();
+        // Control tuning constants
+        final double strafeGain = 0.003;    // How aggressively to strafe (lower = smoother)
+        final double driveGain = 0.05;    // Forward speed scale
+        final double maxStrafePower = 0.3; // Max strafe power
+        final double maxForwardPower = 0.5; // Max forward power
+        final double minForwardPower = 0.1; // Minimum forward to overcome friction
+        final double stopDistanceCm = 10; // How close to stop
+        final double deadband = 15;       // pixels deadband for strafe
 
-        if (!blueObjects.isEmpty()) {
-            telemetry.addLine(blueObjects.size() + " blue object(s) found:");
-            for (int i = 0; i < blueObjects.size(); i++) {
-                Rect r = blueObjects.get(i);
+        // Main loop — camera streaming stays active!
+        while (opModeIsActive()) {
+
+            List<Rect> blueObjects = pipeline.getDetectedRects();
+
+            if (!blueObjects.isEmpty()) {
+                Rect r = blueObjects.get(0);
                 int centerX = r.x + r.width / 2;
                 int centerY = r.y + r.height / 2;
 
-                // === Accurate Distance Calculation ===
+                // Distance calculation
                 double cameraHeightCm = 26.0;
                 double verticalFovDeg = 45.0;
                 double cameraOffsetCm = 10.0;
                 double yOffset = centerY - 240;
                 double angleToTarget = cameraAngleDeg + (yOffset / 480.0) * verticalFovDeg;
 
-                // Slant distance using sin (hypotenuse)
                 double distanceFromCamera = cameraHeightCm / Math.sin(Math.toRadians(angleToTarget));
-
-                // Ground (horizontal) distance via Pythagorean theorem
                 double horizontalDistance = Math.sqrt(
                         Math.pow(distanceFromCamera, 2) - Math.pow(cameraHeightCm, 2));
 
-                // Add camera offset for total robot distance
                 double distanceFromRobot = horizontalDistance + cameraOffsetCm;
 
-                // === Color Info (optional) ===
-                Scalar avgColor = avgColors.get(i);
+                // Strafe control (based on horizontal error)
+                double frameCenterX = 320;
+                double errorX = centerX - frameCenterX;
 
-                telemetry.addData("Object %d", i + 1);
-                telemetry.addData("Center", "X: %d, Y: %d", centerX, centerY);
-                telemetry.addData("Size", "Width: %d, Height: %d", r.width, r.height);
-                telemetry.addData("Angle to Target", "%.1f deg", angleToTarget);
-                telemetry.addData("Distance (Slant)", "%.1f cm", distanceFromCamera);
-                telemetry.addData("Distance (Horizontal)", "%.1f cm", horizontalDistance);
-                telemetry.addData("Distance from Robot", "%.1f cm", distanceFromRobot);
-                telemetry.addData("Avg Color", "B: %.0f G: %.0f R: %.0f",
-                        avgColor.val[0], avgColor.val[1], avgColor.val[2]);
+                double strafe = 0;
+                if (Math.abs(errorX) > deadband) {
+                    strafe = errorX * strafeGain;
+                    // Clamp strafe power
+                    strafe = Math.max(-maxStrafePower, Math.min(strafe, maxStrafePower));
+                }
+
+                // Forward control
+                double forward = 0;
+                if (distanceFromRobot > stopDistanceCm) {
+                    forward = distanceFromRobot * driveGain;
+                    // Clamp forward power between min and max
+                    forward = Math.min(maxForwardPower, Math.max(minForwardPower, forward));
+                }
+
+                if (distanceFromRobot <= stopDistanceCm) {
+                    forward = 0;
+                    strafe = 0;
+                    telemetry.addLine("Object reached.");
+                } else {
+                    telemetry.addLine("Driving toward object...");
+                }
+
+                double turn = 0;  // no turning at all!
+
+                follower.setTeleOpMovementVectors(forward, strafe, turn, true);
+
+                // Telemetry for debugging
+                telemetry.addData("errorX (pixels)", errorX);
+                telemetry.addData("strafe command", strafe);
+                telemetry.addData("forward command", forward);
+                telemetry.addData("Distance (cm)", distanceFromRobot);
+            } else {
+                follower.setTeleOpMovementVectors(0, 0, 0, true);
+                telemetry.addLine("No blue objects detected.");
             }
-        } else {
-            telemetry.addLine("No blue objects found.");
+
+            follower.update();
+            telemetry.update();
+            sleep(50);
         }
 
-        telemetry.update();
-
-        sleep(5000);
-
+        // Stop camera cleanly after opmode ends
         camera.stopStreaming();
         camera.closeCameraDevice();
-
-        while (opModeIsActive()) {
-            idle();
-        }
     }
 
-    // === OpenCV Pipeline Class ===
+    // === Pipeline ===
     private static class BlueObjectDetectionPipeline extends OpenCvPipeline {
         private boolean processed = false;
         private List<Rect> detectedRects = new ArrayList<>();
@@ -163,7 +204,6 @@ public class CameraOpMode extends LinearOpMode {
                     Rect rect = Imgproc.boundingRect(contour);
                     detectedRects.add(rect);
 
-                    // Average color inside bounding box
                     Mat roi = rgbaCopy.submat(rect);
                     Scalar avgColor = Core.mean(roi);
                     avgColors.add(avgColor);
