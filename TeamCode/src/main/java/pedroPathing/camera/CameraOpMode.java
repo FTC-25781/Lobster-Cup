@@ -2,7 +2,6 @@ package pedroPathing.camera;
 
 import com.qualcomm.robotcore.eventloop.opmode.LinearOpMode;
 import com.qualcomm.robotcore.eventloop.opmode.TeleOp;
-
 import com.acmerobotics.dashboard.FtcDashboard;
 import com.acmerobotics.dashboard.config.Config;
 
@@ -21,27 +20,24 @@ import pedroPathing.auto.constants.FConstants;
 import pedroPathing.auto.constants.LConstants;
 
 @Config
-@TeleOp(name = "Camera One Snapshot Drive with Pose Feedback", group = "Concept")
+@TeleOp(name = "Camera Object Drive (Safe Distance)", group = "Concept")
 public class CameraOpMode extends LinearOpMode {
 
     private OpenCvCamera camera;
     private BlueObjectDetectionPipeline pipeline;
 
-    public static double cameraAngleDeg = 31.0;
-
+    public static final double CAMERA_TILT = 31.0;
     private Follower follower;
     private final Pose startPose = new Pose(0, 0, 0);
 
     @Override
     public void runOpMode() {
 
-        // Initialize follower and constants
         Constants.setConstants(FConstants.class, LConstants.class);
         follower = new Follower(hardwareMap, FConstants.class, LConstants.class);
         follower.setStartingPose(startPose);
         follower.startTeleopDrive();
 
-        // Setup camera
         int camMonitorViewId = hardwareMap.appContext.getResources().getIdentifier(
                 "cameraMonitorViewId", "id", hardwareMap.appContext.getPackageName());
 
@@ -70,114 +66,114 @@ public class CameraOpMode extends LinearOpMode {
 
         waitForStart();
 
-        // Wait for first frame processed
-        while (opModeIsActive() && !pipeline.hasProcessedFrame()) {
-            sleep(50);
-        }
-
-        // Get detected objects once
-        List<Rect> blueObjects = pipeline.getDetectedRects();
-
-        if (blueObjects.isEmpty()) {
-            telemetry.addLine("No blue objects detected at start.");
-            telemetry.update();
-            follower.setTeleOpMovementVectors(0, 0, 0, true);
-            follower.update();
-            sleep(3000);
-            return;
-        }
-
-        // Use first detected object
-        Rect r = blueObjects.get(0);
-        int centerX = r.x + r.width / 2;
-        int centerY = r.y + r.height / 2;
-
-        // Calculate distance and lateral offset
-        double cameraHeightCm = 26.0;
-        double verticalFovDeg = 45.0;
-        double cameraOffsetCm = 10.0;
-        double yOffset = centerY - 240;
-        double angleToTarget = cameraAngleDeg + (yOffset / 480.0) * verticalFovDeg;
-
-        double distanceFromCamera = cameraHeightCm / Math.sin(Math.toRadians(angleToTarget));
-        double horizontalDistance = Math.sqrt(
-                Math.pow(distanceFromCamera, 2) - Math.pow(cameraHeightCm, 2));
-
-        double distanceFromRobot = horizontalDistance + cameraOffsetCm;
-
-        // Calculate lateral offset in cm based on pixel offset
-        double frameCenterX = 320;
-        double pixelErrorX = centerX - frameCenterX;
-
-        double horizontalFovDeg = 60.0; // Approximate for Logitech C270
-        double pixelsPerDegree = 640 / horizontalFovDeg;
-        double errorXDegrees = pixelErrorX / pixelsPerDegree;
-
-        double lateralOffsetCm = distanceFromRobot * Math.tan(Math.toRadians(errorXDegrees));
-
-        telemetry.addData("Distance to target (cm)", distanceFromRobot);
-        telemetry.addData("Lateral offset (cm)", lateralOffsetCm);
-        telemetry.update();
-
-        // Target pose relative to start pose
-        final double targetX = distanceFromRobot;  // forward
-        final double targetY = lateralOffsetCm;    // strafe
-
-        // Tolerance for stopping
+        int framesWithoutDetection = 0;
+        final int maxLostFrames = 10;
+        final double stopBeforeCm = 15.0;
         final double toleranceCm = 5.0;
 
         while (opModeIsActive()) {
+
+            if (!pipeline.hasProcessedFrame()) {
+                sleep(50);
+                continue;
+            }
+
+            List<Rect> blueObjects = pipeline.getDetectedRects();
+            if (blueObjects.isEmpty()) {
+                framesWithoutDetection++;
+                telemetry.addData("Frames without detection", framesWithoutDetection);
+                telemetry.update();
+
+                if (framesWithoutDetection > maxLostFrames) {
+                    follower.setTeleOpMovementVectors(0, 0, 0, true);
+                    telemetry.addLine("Lost object for too long. Stopping.");
+                    telemetry.update();
+                    break;
+                }
+                continue;
+            } else {
+                framesWithoutDetection = 0;
+            }
+
+            Rect r = blueObjects.get(0);
+            int centerX = r.x + r.width / 2;
+            int centerY = r.y + r.height / 2;
+
+            // Constants
+            // Camera height from the base
+            double cameraHeightCm = 26.0;
+            // Logitec FOV
+            double verticalFovDeg = 45.0;
+            double horizontalFovDeg = 60.0;
+            //
+            double cameraOffsetCm = 15.24;
+
+            // Camera
+            // CenterY is the center of the object
+            // 240 is half the screen height
+            double yOffset = centerY - 240;
+
+            // Angle to target from CAM frame of reference on z-axis
+            double angleToTarget = CAMERA_TILT + (yOffset / 480.0) * verticalFovDeg;
+
+            // X distance from the object to CAM
+            double distanceFromCamera = cameraHeightCm / Math.sin(Math.toRadians(angleToTarget));
+
+            double horizontalDistance = Math.sqrt(
+                    Math.pow(distanceFromCamera, 2) - Math.pow(cameraHeightCm, 2));
+            double distanceFromRobot = horizontalDistance + cameraOffsetCm - stopBeforeCm;
+
+            double pixelErrorX = centerX - 320;
+            double pixelsPerDegree = 640 / horizontalFovDeg;
+            double errorXDegrees = pixelErrorX / pixelsPerDegree;
+            double lateralOffsetCm = distanceFromRobot * Math.tan(Math.toRadians(errorXDegrees)) + 15.24;
+
             Pose currentPose = follower.getPose();
+            double poseErrorX = distanceFromRobot - currentPose.getX();
+            double poseErrorY = lateralOffsetCm - currentPose.getY();
 
-            // Calculate pose error
-            double poseErrorX = targetX - currentPose.getX();
-            double poseErrorY = targetY - currentPose.getY();
-
-            // Check if within tolerance, then stop
             if (Math.abs(poseErrorX) < toleranceCm && Math.abs(poseErrorY) < toleranceCm) {
                 follower.setTeleOpMovementVectors(0, 0, 0, true);
-                telemetry.addLine("Target reached");
+                telemetry.addLine("Target reached (safe distance)");
                 telemetry.update();
                 break;
             }
 
-            // Proportional control for smooth driving
             double forwardPower = clamp(poseErrorX * 0.05, -0.5, 0.5);
             double strafePower = clamp(poseErrorY * 0.05, -0.3, 0.3);
 
             follower.setTeleOpMovementVectors(forwardPower, strafePower, 0, true);
+            follower.update();
 
-            telemetry.addData("Pose error X (cm)", poseErrorX);
-            telemetry.addData("Pose error Y (cm)", poseErrorY);
+            telemetry.addData("Distance to target (cm)", distanceFromRobot);
+            telemetry.addData("Lateral offset (cm)", lateralOffsetCm);
+            telemetry.addData("Pose error X", poseErrorX);
+            telemetry.addData("Pose error Y", poseErrorY);
             telemetry.addData("Forward power", forwardPower);
             telemetry.addData("Strafe power", strafePower);
             telemetry.update();
 
-            follower.update();
             sleep(50);
         }
 
-        // Cleanup
         camera.stopStreaming();
         camera.closeCameraDevice();
     }
 
-    // Helper clamp method
     private double clamp(double val, double min, double max) {
         return Math.max(min, Math.min(max, val));
     }
 
-    // === OpenCV Pipeline ===
+    // === Blue Object Detection Pipeline ===
     private static class BlueObjectDetectionPipeline extends OpenCvPipeline {
         private boolean processed = false;
         private final List<Rect> detectedRects = new ArrayList<>();
-        private final List<Scalar> avgColors = new ArrayList<>();
-
-        private static final Scalar LOWER_BLUE = new Scalar(100, 150, 50);
-        private static final Scalar UPPER_BLUE = new Scalar(140, 255, 255);
         private final Mat hsv = new Mat();
         private final Mat mask = new Mat();
         private final Mat rgbaCopy = new Mat();
+
+        private static final Scalar LOWER_BLUE = new Scalar(100, 150, 50);
+        private static final Scalar UPPER_BLUE = new Scalar(140, 255, 255);
 
         public boolean hasProcessedFrame() {
             return processed;
@@ -185,10 +181,6 @@ public class CameraOpMode extends LinearOpMode {
 
         public List<Rect> getDetectedRects() {
             return detectedRects;
-        }
-
-        public List<Scalar> getAvgColors() {
-            return avgColors;
         }
 
         @Override
@@ -204,18 +196,12 @@ public class CameraOpMode extends LinearOpMode {
             Imgproc.findContours(mask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE);
 
             detectedRects.clear();
-            avgColors.clear();
 
             for (MatOfPoint contour : contours) {
                 double area = Imgproc.contourArea(contour);
                 if (area > 500) {
                     Rect rect = Imgproc.boundingRect(contour);
                     detectedRects.add(rect);
-
-                    Mat roi = rgbaCopy.submat(rect);
-                    Scalar avgColor = Core.mean(roi);
-                    avgColors.add(avgColor);
-                    roi.release();
                 }
             }
 
