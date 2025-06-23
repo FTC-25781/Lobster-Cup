@@ -102,10 +102,9 @@ public class CameraOpMode extends LinearOpMode {
             // Constants
             // Camera height from the base
             double cameraHeightCm = 26.0;
-            // Logitec FOV
+            // Logitech FOV
             double verticalFovDeg = 45.0;
             double horizontalFovDeg = 60.0;
-            //
             double cameraOffsetCm = 15.24;
 
             // Camera
