@@ -22,7 +22,7 @@ import pedroPathing.auto.constants.LConstants;
 @Config
 @TeleOp(name = "Camera Object Drive (Safe Distance)", group = "Concept")
 public class CameraOpMode extends LinearOpMode {
-
+    // cool camera
     private OpenCvCamera camera;
     private BlueObjectDetectionPipeline pipeline;
 
