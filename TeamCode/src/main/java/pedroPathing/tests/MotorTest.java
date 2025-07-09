@@ -13,12 +13,39 @@ public class MotorTest extends LinearOpMode {
         telemetry.addData("Status", "Initialized");
         telemetry.update();
 
-        motor = hardwareMap.get(DcMotor.class, "motor");
+        motor = hardwareMap.get(DcMotor.class, "intakeSlides");
+        motor.setMode(DcMotor.RunMode.STOP_AND_RESET_ENCODER);
 
         waitForStart();
 
         while (opModeIsActive()) {
-            motor.setPower(gamepad1.left_stick_y);
+            if (gamepad1.dpad_up) {
+                motor.setTargetPosition(-355);
+                motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
+                motor.setPower(0.5);
+
+                while(motor.isBusy()) {
+                    telemetry.addData("Power: ", motor.getPower());
+                    telemetry.addData("Encoder Position", motor.getCurrentPosition());
+                    telemetry.update();
+                }
+
+                motor.setPower(0);
+            }
+
+            if (gamepad1.dpad_down) {
+                motor.setTargetPosition(-76);
+                motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
+                motor.setPower(-0.5);
+
+                while(motor.isBusy()) {
+                    telemetry.addData("Power: ", motor.getPower());
+                    telemetry.addData("Encoder Position", motor.getCurrentPosition());
+                    telemetry.update();
+                }
+
+                motor.setPower(0);
+            }
         }
     }
 }
