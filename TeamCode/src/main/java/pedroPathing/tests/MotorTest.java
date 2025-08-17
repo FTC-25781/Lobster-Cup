@@ -34,7 +34,7 @@ public class MotorTest extends LinearOpMode {
             }
 
             if (gamepad1.dpad_down) {
-                motor.setTargetPosition(-76);
+                motor.setTargetPosition(0);
                 motor.setMode(DcMotor.RunMode.RUN_TO_POSITION);
                 motor.setPower(-0.5);
 

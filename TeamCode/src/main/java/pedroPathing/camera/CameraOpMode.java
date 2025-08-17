@@ -67,13 +67,13 @@ public class CameraOpMode extends LinearOpMode {
         waitForStart();
 
         int framesWithoutDetection = 0;
-        final int maxLostFrames = 10;
+        final int maxLostFrames = 100;
         final double stopBeforeCm = 15.0;
         final double toleranceCm = 5.0;
 
         while (opModeIsActive()) {
 
-            if (!pipeline.hasProcessedFrame()) {
+            if (!pipeline.hasProcessedFrame() && gamepad1.dpad_down) {
                 sleep(50);
                 continue;
             }
@@ -95,45 +95,41 @@ public class CameraOpMode extends LinearOpMode {
                 framesWithoutDetection = 0;
             }
 
-            Rect r = blueObjects.get(0);
+            Rect r = pipeline.getFocusedRect();
+            if (r == null) continue;
+
             int centerX = r.x + r.width / 2;
             int centerY = r.y + r.height / 2;
 
-            // Constants
-            // Camera height from the base
-            double cameraHeightCm = 26.0;
-            // Logitech FOV
-            double verticalFovDeg = 45.0;
-            double horizontalFovDeg = 60.0;
-            double cameraOffsetCm = 15.24;
+            // === Robot Front Center (Green Dot) Image Coordinates ===
+            double in2px = 10.0; // 10 pixels = 1 inch
+            double px2cm = 2.54 / in2px;
 
-            // Camera
-            // CenterY is the center of the object
-            // 240 is half the screen height
-            double yOffset = centerY - 240;
+            double cameraVertOffsetIn = 9.0;     // robot front is 9 inches ahead of camera
+            double cameraHorizOffsetIn = -7.0;   // robot front is 5 inches left of camera
 
-            // Angle to target from CAM frame of reference on z-axis
-            double angleToTarget = CAMERA_TILT + (yOffset / 480.0) * verticalFovDeg;
+            double robotFrontCenterX = 320 + cameraHorizOffsetIn * in2px;
+            double robotFrontCenterY = 240 + cameraVertOffsetIn * in2px;
 
-            // X distance from the object to CAM
-            double distanceFromCamera = cameraHeightCm / Math.sin(Math.toRadians(angleToTarget));
+            // === Compute pixel difference from robot center to object center ===
+            double dxPixels = centerX - robotFrontCenterX;
+            double dyPixels = centerY - robotFrontCenterY;
 
-            double horizontalDistance = Math.sqrt(
-                    Math.pow(distanceFromCamera, 2) - Math.pow(cameraHeightCm, 2));
-            double distanceFromRobot = horizontalDistance + cameraOffsetCm - stopBeforeCm;
-
-            double pixelErrorX = centerX - 320;
-            double pixelsPerDegree = 640 / horizontalFovDeg;
-            double errorXDegrees = pixelErrorX / pixelsPerDegree;
-            double lateralOffsetCm = distanceFromRobot * Math.tan(Math.toRadians(errorXDegrees)) + 15.24;
+            // === Convert pixel difference to real-world cm ===
+            double dxCm = dxPixels * px2cm;
+            double dyCm = dyPixels * px2cm;
 
             Pose currentPose = follower.getPose();
-            double poseErrorX = distanceFromRobot - currentPose.getX();
-            double poseErrorY = lateralOffsetCm - currentPose.getY();
+
+            double targetX = currentPose.getX() + dyCm;  // Forward direction
+            double targetY = currentPose.getY() + dxCm;  // Strafe direction
+
+            double poseErrorX = targetX - currentPose.getX();  // Forward error
+            double poseErrorY = targetY - currentPose.getY();  // Strafe error
 
             if (Math.abs(poseErrorX) < toleranceCm && Math.abs(poseErrorY) < toleranceCm) {
                 follower.setTeleOpMovementVectors(0, 0, 0, true);
-                telemetry.addLine("Target reached (safe distance)");
+                telemetry.addLine("Aligned with object");
                 telemetry.update();
                 break;
             }
@@ -141,18 +137,17 @@ public class CameraOpMode extends LinearOpMode {
             double forwardPower = clamp(poseErrorX * 0.05, -0.5, 0.5);
             double strafePower = clamp(poseErrorY * 0.05, -0.3, 0.3);
 
-            follower.setTeleOpMovementVectors(forwardPower, strafePower, 0, true);
+            follower.setTeleOpMovementVectors(-forwardPower * 0.55, -strafePower * 0.55, 0, true);
             follower.update();
 
-            telemetry.addData("Distance to target (cm)", distanceFromRobot);
-            telemetry.addData("Lateral offset (cm)", lateralOffsetCm);
-            telemetry.addData("Pose error X", poseErrorX);
-            telemetry.addData("Pose error Y", poseErrorY);
+            telemetry.addData("dx (cm)", dxCm);
+            telemetry.addData("dy (cm)", dyCm);
             telemetry.addData("Forward power", forwardPower);
             telemetry.addData("Strafe power", strafePower);
             telemetry.update();
 
             sleep(50);
+
         }
 
         camera.stopStreaming();
@@ -174,6 +169,12 @@ public class CameraOpMode extends LinearOpMode {
         private static final Scalar LOWER_BLUE = new Scalar(100, 150, 50);
         private static final Scalar UPPER_BLUE = new Scalar(140, 255, 255);
 
+        private Rect focusedRect = null;
+
+        public Rect getFocusedRect() {
+            return focusedRect;
+        }
+
         public boolean hasProcessedFrame() {
             return processed;
         }
@@ -186,6 +187,22 @@ public class CameraOpMode extends LinearOpMode {
         public Mat processFrame(Mat input) {
             processed = true;
             input.copyTo(rgbaCopy);
+
+            double cameraVertOffsetIn = -7.0;
+            double cameraHorizontalOffsetIn = 9.0;
+
+            double in2px = 10.0;
+
+            double offsetX = cameraVertOffsetIn * in2px;
+            double offsetY = cameraHorizontalOffsetIn * in2px;
+
+            int cameraCenterX = 320;
+            int cameraCenterY = 240;
+
+            double robotFrontCenterX = cameraCenterX + offsetX;
+            double robotFrontCenterY = cameraCenterY + offsetY;
+
+            Imgproc.circle(input, new Point(robotFrontCenterX, robotFrontCenterY), 8, new Scalar(0, 255, 0), -1);
 
             Imgproc.cvtColor(input, hsv, Imgproc.COLOR_RGB2HSV);
             Core.inRange(hsv, LOWER_BLUE, UPPER_BLUE, mask);
@@ -204,8 +221,29 @@ public class CameraOpMode extends LinearOpMode {
                 }
             }
 
+            focusedRect = null;
+            double minDistance = Double.MAX_VALUE;
+
+            double robotIRLFrontCenterX = robotFrontCenterX * in2px;
+            double robotIRLFrontCenterY = robotFrontCenterY * in2px;
+
             for (Rect rect : detectedRects) {
-                Imgproc.rectangle(input, rect, new Scalar(255, 0, 0), 2);
+                int centerX = rect.x + rect.width / 2;
+                int centerY = rect.y + rect.height / 2;
+
+                double dx = centerX - robotIRLFrontCenterX;
+                double dy = centerY - robotIRLFrontCenterY;
+
+                double distance = Math.sqrt(dx * dx + dy * dy);
+
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    focusedRect = rect;
+                }
+
+                if (focusedRect != null) {
+                    Imgproc.rectangle(input, focusedRect, new Scalar(255, 0, 0), 2);
+                }
             }
 
             return input;
